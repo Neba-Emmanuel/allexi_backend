@@ -12,6 +12,7 @@
     "rewriteRelativeImportExtensions": true
   },
   "include": [
+    "index.ts",
     "src/**/*.ts",
     "shared/src/**/*.ts"
   ]

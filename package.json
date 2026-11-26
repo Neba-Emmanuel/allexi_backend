@@ -9,7 +9,9 @@
     "start": "node --env-file-if-exists=.env dist/src/server.js",
     "typecheck": "tsc --noEmit",
     "test": "node --import tsx --test tests/*.test.ts",
-    "verify": "npm run typecheck && npm test && npm run build"
+    "verify": "npm run typecheck && npm test && npm run build",
+    "prebuild": "node scripts/check-deployment.mjs",
+    "check:vercel": "node --env-file-if-exists=.env scripts/check-deployment.mjs --vercel"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.99.0",

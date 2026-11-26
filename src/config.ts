@@ -8,9 +8,11 @@ export type RuntimeConfig = {
   trustProxy: number;
 };
 export function readConfig(env: NodeJS.ProcessEnv): RuntimeConfig {
-  const production = env.NODE_ENV === "production";
+  const vercel = env.VERCEL === "1";
+  const production = env.NODE_ENV === "production" ||
+    (vercel && env.VERCEL_ENV !== "development");
   const port = Number(env.PORT ?? 3001);
-  const trustProxy = Number(env.TRUST_PROXY_HOPS ?? 0);
+  const trustProxy = Number(env.TRUST_PROXY_HOPS ?? (vercel ? 1 : 0));
   if (!Number.isInteger(port) || port < 1 || port > 65535)
     throw new Error("PORT must be an integer from 1 to 65535");
   if (!Number.isInteger(trustProxy) || trustProxy < 0 || trustProxy > 5)
