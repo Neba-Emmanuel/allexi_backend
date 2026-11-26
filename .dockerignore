@@ -1,0 +1,11 @@
+**/node_modules
+**/.env
+**/.env.*
+**/.expo
+**/dist
+**/dist-native
+**/ios
+**/android
+.git
+**/artifacts
+*.log
