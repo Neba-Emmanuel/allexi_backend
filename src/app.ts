@@ -1,7 +1,7 @@
-import express, { type ErrorRequestHandler } from "express";
+import express, { type ErrorRequestHandler, type RequestHandler } from "express";
 import cors from "cors";
-import helmet from "helmet";
-import rateLimit from "express-rate-limit";
+import helmetModule, { type HelmetOptions } from "helmet";
+import { rateLimit } from "express-rate-limit";
 import { randomUUID } from "node:crypto";
 import { databaseClient } from "./client.js";
 import { accountRouter } from "./account.js";
@@ -10,6 +10,13 @@ import {
   syncResponseSchema,
 } from "../shared/src/index.js";
 import { contentRouter, type ContentApiConfig } from "./content.js";
+
+type HelmetFactory = (options?: Readonly<HelmetOptions>) => RequestHandler;
+// Node and Vercel can resolve different CommonJS/ESM declaration shapes.
+function resolveHelmet(module: HelmetFactory | { default: HelmetFactory }): HelmetFactory {
+  return typeof module === "function" ? module : module.default;
+}
+const helmet = resolveHelmet(helmetModule);
 
 export function createApp(
   config: ContentApiConfig & {
