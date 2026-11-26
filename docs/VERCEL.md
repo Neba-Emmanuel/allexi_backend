@@ -6,7 +6,7 @@ The root `index.ts` exports the existing Express app for Vercel Functions on Nod
 
 Import `Neba-Emmanuel/allexi_backend` into Vercel. For this standalone repository, use its root as Root Directory. If importing the parent checkout instead, set Root Directory to `allexi_backend`.
 
-Select **Express**, Node.js **24.x**, and leave Output Directory unset. The committed `vercel.json` supplies `npm ci`, `npm run build` and a 60-second function duration. `dist` contains compiled Node code, not a static website. Choose a Functions region near the existing Supabase database.
+Select **Express**, Node.js **24.x**, and leave Output Directory unset. The committed `vercel.json` supplies `npm ci --include=dev`, `npm run build` and a 60-second function duration. Development dependencies include TypeScript and type definitions required to compile, even when `NODE_ENV=production`. `dist` contains compiled Node code, not a static website. Choose a Functions region near the existing Supabase database.
 
 Add these variables in Vercel before deployment:
 
