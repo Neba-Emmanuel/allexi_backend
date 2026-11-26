@@ -26,6 +26,8 @@ The build checks deployment variables before TypeScript compilation, and runtime
 
 Apply every migration in `supabase/migrations/` in chronological order using your Supabase migration process before production traffic. Vercel builds do not run migrations. `/ready` checks the expected migration marker.
 
+For a new Allexi schema, `supabase/setup.sql` combines the migrations into one SQL Editor query. See [CONNECT_FRONTEND.md](CONNECT_FRONTEND.md) for installation, administrator access and the frontend connection check.
+
 Provision administrators through Supabase Auth administration and grant membership in `app_private.content_admins` using the SQL in the parent README. Disable public signup in Supabase Auth as well as omitting the signup UI. Configure email delivery and the recovery-code template described in [PRODUCTION.md](PRODUCTION.md). Login and editorial tools are browser-only; readers fetch published scripture without accounts.
 
 Editorial requests validate the caller's token and administrator membership on the server, and database access policies enforce permissions too. Only account deletion uses the server-only service-role key.

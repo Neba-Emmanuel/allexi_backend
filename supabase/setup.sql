@@ -1,0 +1,1630 @@
+-- Allexi Bible: one-time Supabase setup for a new Allexi schema.
+-- Generated with npm run prepare:supabase. Do not edit the generated SQL.
+-- Run this whole file in the project's Supabase SQL Editor as postgres.
+-- It installs tables, access policies, editorial functions, Genesis 1 and readiness.
+-- Existing Allexi installations must apply only their missing migrations instead.
+begin;
+do $allexi_setup_guard$
+begin
+  if to_regclass('public.library_records') is not null
+     or to_regclass('public.scripture_settings') is not null
+     or to_regclass('app_private.content_admins') is not null then
+    raise exception 'Allexi tables already exist. Apply only missing migrations; this one-time setup will not overwrite an existing installation.';
+  end if;
+end;
+$allexi_setup_guard$;
+
+-- Source: 202610190001_library_sync.sql
+-- Apply in the Supabase SQL editor, or with `supabase db push`.
+create table public.library_records (
+  user_id uuid not null references auth.users(id) on delete cascade,
+  id text not null,
+  kind text not null check (kind in ('bookmark','highlight','note','progress')),
+  book integer not null check (book between 0 and 65),
+  chapter integer not null check (chapter between 1 and 150),
+  verse integer not null check (verse between 1 and 176),
+  text text not null default '' check (length(text) <= 20000),
+  color text check (color in ('gold','sage','mint','rose','slate')),
+  deleted boolean not null default false,
+  mutation_id uuid not null,
+  revision bigint not null default 1,
+  primary key (user_id,id),
+  check (id = case when kind = 'progress' then 'progress' else book||'.'||chapter||'.'||verse||'.'||kind end)
+);
+create table public.applied_mutations (
+  user_id uuid not null references auth.users(id) on delete cascade,
+  mutation_id uuid not null,
+  primary key (user_id,mutation_id)
+);
+alter table public.library_records enable row level security;
+alter table public.applied_mutations enable row level security;
+create policy "Read own library" on public.library_records for select to authenticated using ((select auth.uid()) = user_id);
+-- Writes go through the bounded, idempotent RPC below; direct writes are revoked.
+revoke all on public.library_records from anon, authenticated;
+grant select on public.library_records to authenticated;
+revoke all on public.applied_mutations from anon, authenticated;
+
+create or replace function public.sync_library(changes jsonb)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare
+  uid uuid := auth.uid();
+  item jsonb;
+  inserted integer;
+  snapshot jsonb;
+  acknowledged jsonb := '[]'::jsonb;
+begin
+  if uid is null then raise exception 'Authentication required' using errcode = '28000'; end if;
+  if jsonb_typeof(changes) is distinct from 'array' or jsonb_array_length(changes) > 100 then
+    raise exception 'Expected at most 100 changes';
+  end if;
+  -- Serializes each user's snapshots and writes within this transaction.
+  perform pg_advisory_xact_lock(hashtextextended(uid::text,0));
+  for item in select value from jsonb_array_elements(changes) loop
+    if item->>'mutation_id' is null or item->>'id' is null then raise exception 'Invalid change'; end if;
+    insert into public.applied_mutations(user_id,mutation_id) values (uid,(item->>'mutation_id')::uuid) on conflict do nothing;
+    get diagnostics inserted = row_count;
+    if inserted = 1 then
+      insert into public.library_records(user_id,id,kind,book,chapter,verse,text,color,deleted,mutation_id)
+      values(uid,item->>'id',item->>'kind',(item->>'book')::integer,(item->>'chapter')::integer,(item->>'verse')::integer,item->>'text',item->>'color',(item->>'deleted')::boolean,(item->>'mutation_id')::uuid)
+      on conflict(user_id,id) do update set kind=excluded.kind,book=excluded.book,chapter=excluded.chapter,verse=excluded.verse,text=excluded.text,color=excluded.color,deleted=excluded.deleted,mutation_id=excluded.mutation_id,revision=public.library_records.revision+1;
+    end if;
+    acknowledged := acknowledged || jsonb_build_array(item->>'mutation_id');
+  end loop;
+  select coalesce(jsonb_agg(to_jsonb(r)-'user_id'),'[]'::jsonb) into snapshot from public.library_records r where user_id=uid;
+  return jsonb_build_object('records',snapshot,'acknowledged',acknowledged);
+end;
+$$;
+revoke all on function public.sync_library(jsonb) from public, anon;
+grant execute on function public.sync_library(jsonb) to authenticated;
+
+
+-- Source: 202610300001_scripture_admin.sql
+-- Editorial access is granted only by the database owner, never by user metadata.
+create schema if not exists app_private;
+revoke all on schema app_private from public, anon, authenticated;
+create table app_private.content_admins (
+  user_id uuid primary key references auth.users(id) on delete cascade
+);
+create or replace function public.is_content_admin()
+returns boolean language sql stable security definer set search_path = '' as $$
+  select exists(select 1 from app_private.content_admins where user_id = auth.uid());
+$$;
+revoke all on function public.is_content_admin() from public, anon;
+grant execute on function public.is_content_admin() to authenticated;
+
+create table public.scripture_chapters (
+  book integer not null check (book between 0 and 65),
+  chapter integer not null check (chapter between 1 and 150),
+  verse_count integer not null check (verse_count between 1 and 176),
+  primary key (book,chapter)
+);
+insert into public.scripture_chapters(book,chapter,verse_count) values
+(0,1,31),
+(0,2,25),
+(0,3,24),
+(0,4,26),
+(0,5,32),
+(0,6,22),
+(0,7,24),
+(0,8,22),
+(0,9,29),
+(0,10,32),
+(0,11,32),
+(0,12,20),
+(0,13,18),
+(0,14,24),
+(0,15,21),
+(0,16,16),
+(0,17,27),
+(0,18,33),
+(0,19,38),
+(0,20,18),
+(0,21,34),
+(0,22,24),
+(0,23,20),
+(0,24,67),
+(0,25,34),
+(0,26,35),
+(0,27,46),
+(0,28,22),
+(0,29,35),
+(0,30,43),
+(0,31,55),
+(0,32,32),
+(0,33,20),
+(0,34,31),
+(0,35,29),
+(0,36,43),
+(0,37,36),
+(0,38,30),
+(0,39,23),
+(0,40,23),
+(0,41,57),
+(0,42,38),
+(0,43,34),
+(0,44,34),
+(0,45,28),
+(0,46,34),
+(0,47,31),
+(0,48,22),
+(0,49,33),
+(0,50,26),
+(1,1,22),
+(1,2,25),
+(1,3,22),
+(1,4,31),
+(1,5,23),
+(1,6,30),
+(1,7,25),
+(1,8,32),
+(1,9,35),
+(1,10,29),
+(1,11,10),
+(1,12,51),
+(1,13,22),
+(1,14,31),
+(1,15,27),
+(1,16,36),
+(1,17,16),
+(1,18,27),
+(1,19,25),
+(1,20,26),
+(1,21,36),
+(1,22,31),
+(1,23,33),
+(1,24,18),
+(1,25,40),
+(1,26,37),
+(1,27,21),
+(1,28,43),
+(1,29,46),
+(1,30,38),
+(1,31,18),
+(1,32,35),
+(1,33,23),
+(1,34,35),
+(1,35,35),
+(1,36,38),
+(1,37,29),
+(1,38,31),
+(1,39,43),
+(1,40,38),
+(2,1,17),
+(2,2,16),
+(2,3,17),
+(2,4,35),
+(2,5,19),
+(2,6,30),
+(2,7,38),
+(2,8,36),
+(2,9,24),
+(2,10,20),
+(2,11,47),
+(2,12,8),
+(2,13,59),
+(2,14,57),
+(2,15,33),
+(2,16,34),
+(2,17,16),
+(2,18,30),
+(2,19,37),
+(2,20,27),
+(2,21,24),
+(2,22,33),
+(2,23,44),
+(2,24,23),
+(2,25,55),
+(2,26,46),
+(2,27,34),
+(3,1,54),
+(3,2,34),
+(3,3,51),
+(3,4,49),
+(3,5,31),
+(3,6,27),
+(3,7,89),
+(3,8,26),
+(3,9,23),
+(3,10,36),
+(3,11,35),
+(3,12,16),
+(3,13,33),
+(3,14,45),
+(3,15,41),
+(3,16,50),
+(3,17,13),
+(3,18,32),
+(3,19,22),
+(3,20,29),
+(3,21,35),
+(3,22,41),
+(3,23,30),
+(3,24,25),
+(3,25,18),
+(3,26,65),
+(3,27,23),
+(3,28,31),
+(3,29,40),
+(3,30,16),
+(3,31,54),
+(3,32,42),
+(3,33,56),
+(3,34,29),
+(3,35,34),
+(3,36,13),
+(4,1,46),
+(4,2,37),
+(4,3,29),
+(4,4,49),
+(4,5,33),
+(4,6,25),
+(4,7,26),
+(4,8,20),
+(4,9,29),
+(4,10,22),
+(4,11,32),
+(4,12,32),
+(4,13,18),
+(4,14,29),
+(4,15,23),
+(4,16,22),
+(4,17,20),
+(4,18,22),
+(4,19,21),
+(4,20,20),
+(4,21,23),
+(4,22,30),
+(4,23,25),
+(4,24,22),
+(4,25,19),
+(4,26,19),
+(4,27,26),
+(4,28,68),
+(4,29,29),
+(4,30,20),
+(4,31,30),
+(4,32,52),
+(4,33,29),
+(4,34,12),
+(5,1,18),
+(5,2,24),
+(5,3,17),
+(5,4,24),
+(5,5,15),
+(5,6,27),
+(5,7,26),
+(5,8,35),
+(5,9,27),
+(5,10,43),
+(5,11,23),
+(5,12,24),
+(5,13,33),
+(5,14,15),
+(5,15,63),
+(5,16,10),
+(5,17,18),
+(5,18,28),
+(5,19,51),
+(5,20,9),
+(5,21,45),
+(5,22,34),
+(5,23,16),
+(5,24,33),
+(6,1,36),
+(6,2,23),
+(6,3,31),
+(6,4,24),
+(6,5,31),
+(6,6,40),
+(6,7,25),
+(6,8,35),
+(6,9,57),
+(6,10,18),
+(6,11,40),
+(6,12,15),
+(6,13,25),
+(6,14,20),
+(6,15,20),
+(6,16,31),
+(6,17,13),
+(6,18,31),
+(6,19,30),
+(6,20,48),
+(6,21,25),
+(7,1,22),
+(7,2,23),
+(7,3,18),
+(7,4,22),
+(8,1,28),
+(8,2,36),
+(8,3,21),
+(8,4,22),
+(8,5,12),
+(8,6,21),
+(8,7,17),
+(8,8,22),
+(8,9,27),
+(8,10,27),
+(8,11,15),
+(8,12,25),
+(8,13,23),
+(8,14,52),
+(8,15,35),
+(8,16,23),
+(8,17,58),
+(8,18,30),
+(8,19,24),
+(8,20,42),
+(8,21,15),
+(8,22,23),
+(8,23,29),
+(8,24,22),
+(8,25,44),
+(8,26,25),
+(8,27,12),
+(8,28,25),
+(8,29,11),
+(8,30,31),
+(8,31,13),
+(9,1,27),
+(9,2,32),
+(9,3,39),
+(9,4,12),
+(9,5,25),
+(9,6,23),
+(9,7,29),
+(9,8,18),
+(9,9,13),
+(9,10,19),
+(9,11,27),
+(9,12,31),
+(9,13,39),
+(9,14,33),
+(9,15,37),
+(9,16,23),
+(9,17,29),
+(9,18,33),
+(9,19,43),
+(9,20,26),
+(9,21,22),
+(9,22,51),
+(9,23,39),
+(9,24,25),
+(10,1,53),
+(10,2,46),
+(10,3,28),
+(10,4,34),
+(10,5,18),
+(10,6,38),
+(10,7,51),
+(10,8,66),
+(10,9,28),
+(10,10,29),
+(10,11,43),
+(10,12,33),
+(10,13,34),
+(10,14,31),
+(10,15,34),
+(10,16,34),
+(10,17,24),
+(10,18,46),
+(10,19,21),
+(10,20,43),
+(10,21,29),
+(10,22,53),
+(11,1,18),
+(11,2,25),
+(11,3,27),
+(11,4,44),
+(11,5,27),
+(11,6,33),
+(11,7,20),
+(11,8,29),
+(11,9,37),
+(11,10,36),
+(11,11,21),
+(11,12,21),
+(11,13,25),
+(11,14,29),
+(11,15,38),
+(11,16,20),
+(11,17,41),
+(11,18,37),
+(11,19,37),
+(11,20,21),
+(11,21,26),
+(11,22,20),
+(11,23,37),
+(11,24,20),
+(11,25,30),
+(12,1,54),
+(12,2,55),
+(12,3,24),
+(12,4,43),
+(12,5,26),
+(12,6,81),
+(12,7,40),
+(12,8,40),
+(12,9,44),
+(12,10,14),
+(12,11,47),
+(12,12,40),
+(12,13,14),
+(12,14,17),
+(12,15,29),
+(12,16,43),
+(12,17,27),
+(12,18,17),
+(12,19,19),
+(12,20,8),
+(12,21,30),
+(12,22,19),
+(12,23,32),
+(12,24,31),
+(12,25,31),
+(12,26,32),
+(12,27,34),
+(12,28,21),
+(12,29,30),
+(13,1,17),
+(13,2,18),
+(13,3,17),
+(13,4,22),
+(13,5,14),
+(13,6,42),
+(13,7,22),
+(13,8,18),
+(13,9,31),
+(13,10,19),
+(13,11,23),
+(13,12,16),
+(13,13,22),
+(13,14,15),
+(13,15,19),
+(13,16,14),
+(13,17,19),
+(13,18,34),
+(13,19,11),
+(13,20,37),
+(13,21,20),
+(13,22,12),
+(13,23,21),
+(13,24,27),
+(13,25,28),
+(13,26,23),
+(13,27,9),
+(13,28,27),
+(13,29,36),
+(13,30,27),
+(13,31,21),
+(13,32,33),
+(13,33,25),
+(13,34,33),
+(13,35,27),
+(13,36,23),
+(14,1,11),
+(14,2,70),
+(14,3,13),
+(14,4,24),
+(14,5,17),
+(14,6,22),
+(14,7,28),
+(14,8,36),
+(14,9,15),
+(14,10,44),
+(15,1,11),
+(15,2,20),
+(15,3,32),
+(15,4,23),
+(15,5,19),
+(15,6,19),
+(15,7,73),
+(15,8,18),
+(15,9,38),
+(15,10,39),
+(15,11,36),
+(15,12,47),
+(15,13,31),
+(16,1,22),
+(16,2,23),
+(16,3,15),
+(16,4,17),
+(16,5,14),
+(16,6,14),
+(16,7,10),
+(16,8,17),
+(16,9,32),
+(16,10,3),
+(17,1,22),
+(17,2,13),
+(17,3,26),
+(17,4,21),
+(17,5,27),
+(17,6,30),
+(17,7,21),
+(17,8,22),
+(17,9,35),
+(17,10,22),
+(17,11,20),
+(17,12,25),
+(17,13,28),
+(17,14,22),
+(17,15,35),
+(17,16,22),
+(17,17,16),
+(17,18,21),
+(17,19,29),
+(17,20,29),
+(17,21,34),
+(17,22,30),
+(17,23,17),
+(17,24,25),
+(17,25,6),
+(17,26,14),
+(17,27,23),
+(17,28,28),
+(17,29,25),
+(17,30,31),
+(17,31,40),
+(17,32,22),
+(17,33,33),
+(17,34,37),
+(17,35,16),
+(17,36,33),
+(17,37,24),
+(17,38,41),
+(17,39,30),
+(17,40,24),
+(17,41,34),
+(17,42,17),
+(18,1,6),
+(18,2,12),
+(18,3,8),
+(18,4,8),
+(18,5,12),
+(18,6,10),
+(18,7,17),
+(18,8,9),
+(18,9,20),
+(18,10,18),
+(18,11,7),
+(18,12,8),
+(18,13,6),
+(18,14,7),
+(18,15,5),
+(18,16,11),
+(18,17,15),
+(18,18,50),
+(18,19,14),
+(18,20,9),
+(18,21,13),
+(18,22,31),
+(18,23,6),
+(18,24,10),
+(18,25,22),
+(18,26,12),
+(18,27,14),
+(18,28,9),
+(18,29,11),
+(18,30,12),
+(18,31,24),
+(18,32,11),
+(18,33,22),
+(18,34,22),
+(18,35,28),
+(18,36,12),
+(18,37,40),
+(18,38,22),
+(18,39,13),
+(18,40,17),
+(18,41,13),
+(18,42,11),
+(18,43,5),
+(18,44,26),
+(18,45,17),
+(18,46,11),
+(18,47,9),
+(18,48,14),
+(18,49,20),
+(18,50,23),
+(18,51,19),
+(18,52,9),
+(18,53,6),
+(18,54,7),
+(18,55,23),
+(18,56,13),
+(18,57,11),
+(18,58,11),
+(18,59,17),
+(18,60,12),
+(18,61,8),
+(18,62,12),
+(18,63,11),
+(18,64,10),
+(18,65,13),
+(18,66,20),
+(18,67,7),
+(18,68,35),
+(18,69,36),
+(18,70,5),
+(18,71,24),
+(18,72,20),
+(18,73,28),
+(18,74,23),
+(18,75,10),
+(18,76,12),
+(18,77,20),
+(18,78,72),
+(18,79,13),
+(18,80,19),
+(18,81,16),
+(18,82,8),
+(18,83,18),
+(18,84,12),
+(18,85,13),
+(18,86,17),
+(18,87,7),
+(18,88,18),
+(18,89,52),
+(18,90,17),
+(18,91,16),
+(18,92,15),
+(18,93,5),
+(18,94,23),
+(18,95,11),
+(18,96,13),
+(18,97,12),
+(18,98,9),
+(18,99,9),
+(18,100,5),
+(18,101,8),
+(18,102,28),
+(18,103,22),
+(18,104,35),
+(18,105,45),
+(18,106,48),
+(18,107,43),
+(18,108,13),
+(18,109,31),
+(18,110,7),
+(18,111,10),
+(18,112,10),
+(18,113,9),
+(18,114,8),
+(18,115,18),
+(18,116,19),
+(18,117,2),
+(18,118,29),
+(18,119,176),
+(18,120,7),
+(18,121,8),
+(18,122,9),
+(18,123,4),
+(18,124,8),
+(18,125,5),
+(18,126,6),
+(18,127,5),
+(18,128,6),
+(18,129,8),
+(18,130,8),
+(18,131,3),
+(18,132,18),
+(18,133,3),
+(18,134,3),
+(18,135,21),
+(18,136,26),
+(18,137,9),
+(18,138,8),
+(18,139,24),
+(18,140,13),
+(18,141,10),
+(18,142,7),
+(18,143,12),
+(18,144,15),
+(18,145,21),
+(18,146,10),
+(18,147,20),
+(18,148,14),
+(18,149,9),
+(18,150,6),
+(19,1,33),
+(19,2,22),
+(19,3,35),
+(19,4,27),
+(19,5,23),
+(19,6,35),
+(19,7,27),
+(19,8,36),
+(19,9,18),
+(19,10,32),
+(19,11,31),
+(19,12,28),
+(19,13,25),
+(19,14,35),
+(19,15,33),
+(19,16,33),
+(19,17,28),
+(19,18,24),
+(19,19,29),
+(19,20,30),
+(19,21,31),
+(19,22,29),
+(19,23,35),
+(19,24,34),
+(19,25,28),
+(19,26,28),
+(19,27,27),
+(19,28,28),
+(19,29,27),
+(19,30,33),
+(19,31,31),
+(20,1,18),
+(20,2,26),
+(20,3,22),
+(20,4,16),
+(20,5,20),
+(20,6,12),
+(20,7,29),
+(20,8,17),
+(20,9,18),
+(20,10,20),
+(20,11,10),
+(20,12,14),
+(21,1,17),
+(21,2,17),
+(21,3,11),
+(21,4,16),
+(21,5,16),
+(21,6,13),
+(21,7,13),
+(21,8,14),
+(22,1,31),
+(22,2,22),
+(22,3,26),
+(22,4,6),
+(22,5,30),
+(22,6,13),
+(22,7,25),
+(22,8,22),
+(22,9,21),
+(22,10,34),
+(22,11,16),
+(22,12,6),
+(22,13,22),
+(22,14,32),
+(22,15,9),
+(22,16,14),
+(22,17,14),
+(22,18,7),
+(22,19,25),
+(22,20,6),
+(22,21,17),
+(22,22,25),
+(22,23,18),
+(22,24,23),
+(22,25,12),
+(22,26,21),
+(22,27,13),
+(22,28,29),
+(22,29,24),
+(22,30,33),
+(22,31,9),
+(22,32,20),
+(22,33,24),
+(22,34,17),
+(22,35,10),
+(22,36,22),
+(22,37,38),
+(22,38,22),
+(22,39,8),
+(22,40,31),
+(22,41,29),
+(22,42,25),
+(22,43,28),
+(22,44,28),
+(22,45,25),
+(22,46,13),
+(22,47,15),
+(22,48,22),
+(22,49,26),
+(22,50,11),
+(22,51,23),
+(22,52,15),
+(22,53,12),
+(22,54,17),
+(22,55,13),
+(22,56,12),
+(22,57,21),
+(22,58,14),
+(22,59,21),
+(22,60,22),
+(22,61,11),
+(22,62,12),
+(22,63,19),
+(22,64,12),
+(22,65,25),
+(22,66,24),
+(23,1,19),
+(23,2,37),
+(23,3,25),
+(23,4,31),
+(23,5,31),
+(23,6,30),
+(23,7,34),
+(23,8,22),
+(23,9,26),
+(23,10,25),
+(23,11,23),
+(23,12,17),
+(23,13,27),
+(23,14,22),
+(23,15,21),
+(23,16,21),
+(23,17,27),
+(23,18,23),
+(23,19,15),
+(23,20,18),
+(23,21,14),
+(23,22,30),
+(23,23,40),
+(23,24,10),
+(23,25,38),
+(23,26,24),
+(23,27,22),
+(23,28,17),
+(23,29,32),
+(23,30,24),
+(23,31,40),
+(23,32,44),
+(23,33,26),
+(23,34,22),
+(23,35,19),
+(23,36,32),
+(23,37,21),
+(23,38,28),
+(23,39,18),
+(23,40,16),
+(23,41,18),
+(23,42,22),
+(23,43,13),
+(23,44,30),
+(23,45,5),
+(23,46,28),
+(23,47,7),
+(23,48,47),
+(23,49,39),
+(23,50,46),
+(23,51,64),
+(23,52,34),
+(24,1,22),
+(24,2,22),
+(24,3,66),
+(24,4,22),
+(24,5,22),
+(25,1,28),
+(25,2,10),
+(25,3,27),
+(25,4,17),
+(25,5,17),
+(25,6,14),
+(25,7,27),
+(25,8,18),
+(25,9,11),
+(25,10,22),
+(25,11,25),
+(25,12,28),
+(25,13,23),
+(25,14,23),
+(25,15,8),
+(25,16,63),
+(25,17,24),
+(25,18,32),
+(25,19,14),
+(25,20,49),
+(25,21,32),
+(25,22,31),
+(25,23,49),
+(25,24,27),
+(25,25,17),
+(25,26,21),
+(25,27,36),
+(25,28,26),
+(25,29,21),
+(25,30,26),
+(25,31,18),
+(25,32,32),
+(25,33,33),
+(25,34,31),
+(25,35,15),
+(25,36,38),
+(25,37,28),
+(25,38,23),
+(25,39,29),
+(25,40,49),
+(25,41,26),
+(25,42,20),
+(25,43,27),
+(25,44,31),
+(25,45,25),
+(25,46,24),
+(25,47,23),
+(25,48,35),
+(26,1,21),
+(26,2,49),
+(26,3,30),
+(26,4,37),
+(26,5,31),
+(26,6,28),
+(26,7,28),
+(26,8,27),
+(26,9,27),
+(26,10,21),
+(26,11,45),
+(26,12,13),
+(27,1,11),
+(27,2,23),
+(27,3,5),
+(27,4,19),
+(27,5,15),
+(27,6,11),
+(27,7,16),
+(27,8,14),
+(27,9,17),
+(27,10,15),
+(27,11,12),
+(27,12,14),
+(27,13,16),
+(27,14,9),
+(28,1,20),
+(28,2,32),
+(28,3,21),
+(29,1,15),
+(29,2,16),
+(29,3,15),
+(29,4,13),
+(29,5,27),
+(29,6,14),
+(29,7,17),
+(29,8,14),
+(29,9,15),
+(30,1,21),
+(31,1,17),
+(31,2,10),
+(31,3,10),
+(31,4,11),
+(32,1,16),
+(32,2,13),
+(32,3,12),
+(32,4,13),
+(32,5,15),
+(32,6,16),
+(32,7,20),
+(33,1,15),
+(33,2,13),
+(33,3,19),
+(34,1,17),
+(34,2,20),
+(34,3,19),
+(35,1,18),
+(35,2,15),
+(35,3,20),
+(36,1,15),
+(36,2,23),
+(37,1,21),
+(37,2,13),
+(37,3,10),
+(37,4,14),
+(37,5,11),
+(37,6,15),
+(37,7,14),
+(37,8,23),
+(37,9,17),
+(37,10,12),
+(37,11,17),
+(37,12,14),
+(37,13,9),
+(37,14,21),
+(38,1,14),
+(38,2,17),
+(38,3,18),
+(38,4,6),
+(39,1,25),
+(39,2,23),
+(39,3,17),
+(39,4,25),
+(39,5,48),
+(39,6,34),
+(39,7,29),
+(39,8,34),
+(39,9,38),
+(39,10,42),
+(39,11,30),
+(39,12,50),
+(39,13,58),
+(39,14,36),
+(39,15,39),
+(39,16,28),
+(39,17,27),
+(39,18,35),
+(39,19,30),
+(39,20,34),
+(39,21,46),
+(39,22,46),
+(39,23,39),
+(39,24,51),
+(39,25,46),
+(39,26,75),
+(39,27,66),
+(39,28,20),
+(40,1,45),
+(40,2,28),
+(40,3,35),
+(40,4,41),
+(40,5,43),
+(40,6,56),
+(40,7,37),
+(40,8,38),
+(40,9,50),
+(40,10,52),
+(40,11,33),
+(40,12,44),
+(40,13,37),
+(40,14,72),
+(40,15,47),
+(40,16,20),
+(41,1,80),
+(41,2,52),
+(41,3,38),
+(41,4,44),
+(41,5,39),
+(41,6,49),
+(41,7,50),
+(41,8,56),
+(41,9,62),
+(41,10,42),
+(41,11,54),
+(41,12,59),
+(41,13,35),
+(41,14,35),
+(41,15,32),
+(41,16,31),
+(41,17,37),
+(41,18,43),
+(41,19,48),
+(41,20,47),
+(41,21,38),
+(41,22,71),
+(41,23,56),
+(41,24,53),
+(42,1,51),
+(42,2,25),
+(42,3,36),
+(42,4,54),
+(42,5,47),
+(42,6,71),
+(42,7,53),
+(42,8,59),
+(42,9,41),
+(42,10,42),
+(42,11,57),
+(42,12,50),
+(42,13,38),
+(42,14,31),
+(42,15,27),
+(42,16,33),
+(42,17,26),
+(42,18,40),
+(42,19,42),
+(42,20,31),
+(42,21,25),
+(43,1,26),
+(43,2,47),
+(43,3,26),
+(43,4,37),
+(43,5,42),
+(43,6,15),
+(43,7,60),
+(43,8,40),
+(43,9,43),
+(43,10,48),
+(43,11,30),
+(43,12,25),
+(43,13,52),
+(43,14,28),
+(43,15,41),
+(43,16,40),
+(43,17,34),
+(43,18,28),
+(43,19,41),
+(43,20,38),
+(43,21,40),
+(43,22,30),
+(43,23,35),
+(43,24,27),
+(43,25,27),
+(43,26,32),
+(43,27,44),
+(43,28,31),
+(44,1,32),
+(44,2,29),
+(44,3,31),
+(44,4,25),
+(44,5,21),
+(44,6,23),
+(44,7,25),
+(44,8,39),
+(44,9,33),
+(44,10,21),
+(44,11,36),
+(44,12,21),
+(44,13,14),
+(44,14,23),
+(44,15,33),
+(44,16,27),
+(45,1,31),
+(45,2,16),
+(45,3,23),
+(45,4,21),
+(45,5,13),
+(45,6,20),
+(45,7,40),
+(45,8,13),
+(45,9,27),
+(45,10,33),
+(45,11,34),
+(45,12,31),
+(45,13,13),
+(45,14,40),
+(45,15,58),
+(45,16,24),
+(46,1,24),
+(46,2,17),
+(46,3,18),
+(46,4,18),
+(46,5,21),
+(46,6,18),
+(46,7,16),
+(46,8,24),
+(46,9,15),
+(46,10,18),
+(46,11,33),
+(46,12,21),
+(46,13,14),
+(47,1,24),
+(47,2,21),
+(47,3,29),
+(47,4,31),
+(47,5,26),
+(47,6,18),
+(48,1,23),
+(48,2,22),
+(48,3,21),
+(48,4,32),
+(48,5,33),
+(48,6,24),
+(49,1,30),
+(49,2,30),
+(49,3,21),
+(49,4,23),
+(50,1,29),
+(50,2,23),
+(50,3,25),
+(50,4,18),
+(51,1,10),
+(51,2,20),
+(51,3,13),
+(51,4,18),
+(51,5,28),
+(52,1,12),
+(52,2,17),
+(52,3,18),
+(53,1,20),
+(53,2,15),
+(53,3,16),
+(53,4,16),
+(53,5,25),
+(53,6,21),
+(54,1,18),
+(54,2,26),
+(54,3,17),
+(54,4,22),
+(55,1,16),
+(55,2,15),
+(55,3,15),
+(56,1,25),
+(57,1,14),
+(57,2,18),
+(57,3,19),
+(57,4,16),
+(57,5,14),
+(57,6,20),
+(57,7,28),
+(57,8,13),
+(57,9,28),
+(57,10,39),
+(57,11,40),
+(57,12,29),
+(57,13,25),
+(58,1,27),
+(58,2,26),
+(58,3,18),
+(58,4,17),
+(58,5,20),
+(59,1,25),
+(59,2,25),
+(59,3,22),
+(59,4,19),
+(59,5,14),
+(60,1,21),
+(60,2,22),
+(60,3,18),
+(61,1,10),
+(61,2,29),
+(61,3,24),
+(61,4,21),
+(61,5,21),
+(62,1,13),
+(63,1,14),
+(64,1,25),
+(65,1,20),
+(65,2,29),
+(65,3,22),
+(65,4,11),
+(65,5,14),
+(65,6,17),
+(65,7,17),
+(65,8,13),
+(65,9,21),
+(65,10,11),
+(65,11,19),
+(65,12,17),
+(65,13,18),
+(65,14,20),
+(65,15,8),
+(65,16,21),
+(65,17,18),
+(65,18,24),
+(65,19,21),
+(65,20,15),
+(65,21,27),
+(65,22,21);
+
+create table public.scripture_drafts (
+  edition text not null check (edition in ('kjv','allexi')),
+  book integer not null, chapter integer not null, verse integer not null check (verse between 1 and 176),
+  text text not null check (length(trim(text)) between 1 and 20000),
+  status text not null check (status in ('draft','updated')),
+  revision integer not null check (revision > 0),
+  updated_at timestamptz not null default now(),
+  updated_by uuid not null references auth.users(id),
+  primary key (edition,book,chapter,verse),
+  foreign key (book,chapter) references public.scripture_chapters(book,chapter)
+);
+create table public.scripture_publications (
+  edition text not null check (edition in ('kjv','allexi')),
+  book integer not null, chapter integer not null, verse integer not null,
+  text text not null check (length(trim(text)) between 1 and 20000),
+  revision integer not null check (revision > 0),
+  published_at timestamptz not null default now(),
+  primary key (edition,book,chapter,verse),
+  foreign key (edition,book,chapter,verse) references public.scripture_drafts(edition,book,chapter,verse)
+);
+create table public.scripture_settings (
+  id boolean primary key default true check (id),
+  default_edition text not null default 'kjv' check (default_edition in ('kjv','allexi')),
+  revision integer not null default 0 check (revision >= 0)
+);
+insert into public.scripture_settings(id) values(true);
+create table public.scripture_history (
+  id bigint generated always as identity primary key,
+  edition text not null check (edition in ('kjv','allexi')),
+  book integer, chapter integer, verse integer,
+  action text not null check (action in ('save_draft','mark_updated','publish','set_default')),
+  before_text text, after_text text, status text,
+  revision integer not null,
+  actor_id uuid not null references auth.users(id),
+  created_at timestamptz not null default now()
+);
+create index scripture_history_coordinates on public.scripture_history(edition,book,chapter,verse,id desc);
+
+alter table public.scripture_chapters enable row level security;
+alter table public.scripture_drafts enable row level security;
+alter table public.scripture_publications enable row level security;
+alter table public.scripture_settings enable row level security;
+alter table public.scripture_history enable row level security;
+revoke all on public.scripture_chapters, public.scripture_drafts, public.scripture_publications, public.scripture_settings, public.scripture_history from public, anon, authenticated;
+grant select on public.scripture_drafts, public.scripture_history to authenticated;
+create policy "Editors read drafts" on public.scripture_drafts for select to authenticated using ((select public.is_content_admin()));
+create policy "Editors read history" on public.scripture_history for select to authenticated using ((select public.is_content_admin()));
+
+create or replace function public.admin_scripture_overview(p_edition text)
+returns jsonb language plpgsql stable security definer set search_path = '' as $$
+declare result jsonb;
+begin
+  if not public.is_content_admin() then raise exception 'Admin access required' using errcode='42501'; end if;
+  if p_edition not in ('kjv','allexi') then raise exception 'Invalid edition' using errcode='22023'; end if;
+  select jsonb_build_object('edition',p_edition,'defaultEdition',s.default_edition,'revision',s.revision,'chapters',(
+    select jsonb_agg(jsonb_build_object('book',c.book,'chapter',c.chapter,'total',c.verse_count,
+      'updated',coalesce(d.updated,0),'draft',coalesce(d.draft,0),'published',coalesce(p.published,0)) order by c.book,c.chapter)
+    from public.scripture_chapters c
+    left join (select book,chapter,count(*) filter(where status='updated') as updated,count(*) filter(where status='draft') as draft from public.scripture_drafts where edition=p_edition group by book,chapter) d using(book,chapter)
+    left join (select book,chapter,count(*) as published from public.scripture_publications where edition=p_edition group by book,chapter) p using(book,chapter)
+  )) into result from public.scripture_settings s where id;
+  return result;
+end;
+$$;
+
+create or replace function public.admin_scripture_chapter(p_edition text,p_book integer,p_chapter integer)
+returns jsonb language plpgsql stable security definer set search_path = '' as $$
+declare result jsonb; total integer;
+begin
+  if not public.is_content_admin() then raise exception 'Admin access required' using errcode='42501'; end if;
+  select verse_count into total from public.scripture_chapters where book=p_book and chapter=p_chapter;
+  if total is null or p_edition not in ('kjv','allexi') then raise exception 'Unknown chapter or edition' using errcode='22023'; end if;
+  select jsonb_build_object('edition',p_edition,'book',p_book,'chapter',p_chapter,'verses',jsonb_agg(jsonb_build_object(
+    'book',p_book,'chapter',p_chapter,'verse',v.n,'text',coalesce(d.text,''),'status',coalesce(d.status,'pending'),
+    'revision',coalesce(d.revision,0),'updated_at',d.updated_at,'updated_by',d.updated_by,
+    'published_revision',p.revision,'published_text',p.text) order by v.n)) into result
+  from generate_series(1,total) v(n)
+  left join public.scripture_drafts d on d.edition=p_edition and d.book=p_book and d.chapter=p_chapter and d.verse=v.n
+  left join public.scripture_publications p on p.edition=p_edition and p.book=p_book and p.chapter=p_chapter and p.verse=v.n;
+  return result;
+end;
+$$;
+
+create or replace function public.save_scripture_chapter(p_edition text,p_book integer,p_chapter integer,changes jsonb)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare item jsonb; previous public.scripture_drafts; total integer; next_revision integer;
+begin
+  if not public.is_content_admin() then raise exception 'Admin access required' using errcode='42501'; end if;
+  select verse_count into total from public.scripture_chapters where book=p_book and chapter=p_chapter;
+  if total is null or p_edition not in ('kjv','allexi') then raise exception 'Unknown chapter or edition' using errcode='22023'; end if;
+  if jsonb_typeof(changes) is distinct from 'array' or jsonb_array_length(changes) not between 1 and 176 then raise exception 'Invalid changes' using errcode='22023'; end if;
+  if (select count(*) from jsonb_array_elements(changes)) <> (select count(distinct value->>'verse') from jsonb_array_elements(changes)) then raise exception 'Duplicate verses' using errcode='22023'; end if;
+  perform pg_advisory_xact_lock(hashtextextended('scripture:'||p_edition||':'||p_book||':'||p_chapter,0));
+  for item in select value from jsonb_array_elements(changes) loop
+    if (item->>'book')::integer is distinct from p_book or (item->>'chapter')::integer is distinct from p_chapter
+       or (item->>'verse')::integer is null or (item->>'verse')::integer not between 1 and total
+       or item->>'status' is null or item->>'status' not in ('draft','updated')
+       or length(trim(coalesce(item->>'text',''))) not between 1 and 20000
+       or (item->>'expectedRevision')::integer is null or (item->>'expectedRevision')::integer < 0
+    then raise exception 'Invalid verse change' using errcode='22023'; end if;
+    select * into previous from public.scripture_drafts where edition=p_edition and book=p_book and chapter=p_chapter and verse=(item->>'verse')::integer;
+    if coalesce(previous.revision,0) <> (item->>'expectedRevision')::integer then raise exception 'This verse was changed by another editor' using errcode='40001'; end if;
+    next_revision := coalesce(previous.revision,0)+1;
+    insert into public.scripture_drafts(edition,book,chapter,verse,text,status,revision,updated_by)
+    values(p_edition,p_book,p_chapter,(item->>'verse')::integer,trim(item->>'text'),item->>'status',next_revision,auth.uid())
+    on conflict(edition,book,chapter,verse) do update set text=excluded.text,status=excluded.status,revision=excluded.revision,updated_at=now(),updated_by=excluded.updated_by;
+    insert into public.scripture_history(edition,book,chapter,verse,action,before_text,after_text,status,revision,actor_id)
+    values(p_edition,p_book,p_chapter,(item->>'verse')::integer,case when item->>'status'='updated' then 'mark_updated' else 'save_draft' end,previous.text,trim(item->>'text'),item->>'status',next_revision,auth.uid());
+  end loop;
+  return public.admin_scripture_chapter(p_edition,p_book,p_chapter);
+end;
+$$;
+
+create or replace function public.publish_scripture_chapter(p_edition text,p_book integer,p_chapter integer,revisions jsonb)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare item jsonb; draft public.scripture_drafts; previous public.scripture_publications; changed boolean := false;
+begin
+  if not public.is_content_admin() then raise exception 'Admin access required' using errcode='42501'; end if;
+  if p_edition not in ('kjv','allexi') or jsonb_typeof(revisions) is distinct from 'array' or jsonb_array_length(revisions) not between 1 and 176 then raise exception 'Invalid publication' using errcode='22023'; end if;
+  if (select count(*) from jsonb_array_elements(revisions)) <> (select count(distinct value->>'verse') from jsonb_array_elements(revisions)) then raise exception 'Duplicate verses' using errcode='22023'; end if;
+  perform pg_advisory_xact_lock(hashtextextended('scripture:'||p_edition||':'||p_book||':'||p_chapter,0));
+  for item in select value from jsonb_array_elements(revisions) loop
+    select * into draft from public.scripture_drafts where edition=p_edition and book=p_book and chapter=p_chapter and verse=(item->>'verse')::integer;
+    if draft.revision is null or (item->>'revision')::integer is distinct from draft.revision then raise exception 'The publication is out of date. Reload the chapter.' using errcode='40001'; end if;
+    if draft.status <> 'updated' then raise exception 'Only updated verses can be published' using errcode='22023'; end if;
+    select * into previous from public.scripture_publications where edition=p_edition and book=p_book and chapter=p_chapter and verse=draft.verse;
+    if previous.revision is not distinct from draft.revision then continue; end if;
+    insert into public.scripture_publications(edition,book,chapter,verse,text,revision)
+    values(p_edition,p_book,p_chapter,draft.verse,draft.text,draft.revision)
+    on conflict(edition,book,chapter,verse) do update set text=excluded.text,revision=excluded.revision,published_at=now();
+    insert into public.scripture_history(edition,book,chapter,verse,action,before_text,after_text,status,revision,actor_id)
+    values(p_edition,p_book,p_chapter,draft.verse,'publish',previous.text,draft.text,draft.status,draft.revision,auth.uid());
+    changed := true;
+  end loop;
+  if changed then update public.scripture_settings set revision=revision+1 where id; end if;
+  return public.admin_scripture_chapter(p_edition,p_book,p_chapter);
+end;
+$$;
+
+create or replace function public.set_scripture_default(p_edition text,expected_revision integer)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare settings public.scripture_settings;
+begin
+  if not public.is_content_admin() then raise exception 'Admin access required' using errcode='42501'; end if;
+  if p_edition not in ('kjv','allexi') then raise exception 'Invalid edition' using errcode='22023'; end if;
+  select * into settings from public.scripture_settings where id for update;
+  if expected_revision is distinct from settings.revision then raise exception 'Settings changed. Reload before continuing.' using errcode='40001'; end if;
+  if p_edition='allexi' and not exists(select 1 from public.scripture_publications where edition='allexi') then raise exception 'Publish at least one Allexi verse first.' using errcode='22023'; end if;
+  if settings.default_edition<>p_edition then
+    update public.scripture_settings set default_edition=p_edition,revision=revision+1 where id;
+    insert into public.scripture_history(edition,action,before_text,after_text,revision,actor_id)
+    values(p_edition,'set_default',settings.default_edition,p_edition,settings.revision+1,auth.uid());
+  end if;
+  return public.admin_scripture_overview(p_edition);
+end;
+$$;
+
+create or replace function public.admin_scripture_history(p_edition text,p_book integer,p_chapter integer,p_verse integer default null)
+returns jsonb language plpgsql stable security definer set search_path = '' as $$
+begin
+  if not public.is_content_admin() then raise exception 'Admin access required' using errcode='42501'; end if;
+  return (select coalesce(jsonb_agg(to_jsonb(h) order by h.id desc),'[]'::jsonb) from (
+    select * from public.scripture_history where edition=p_edition and book=p_book and chapter=p_chapter and (p_verse is null or verse=p_verse) order by id desc limit 100
+  ) h);
+end;
+$$;
+
+-- One MVCC statement returns the default and published text atomically.
+-- Explicit fields exclude drafts, editor identity and revision history.
+create or replace function public.reader_scripture_snapshot()
+returns jsonb language sql stable security definer set search_path = '' as $$
+  select jsonb_build_object('defaultEdition',default_edition,'revision',revision,'verses',(
+    select coalesce(jsonb_agg(jsonb_build_object('edition',edition,'book',book,'chapter',chapter,'verse',verse,'text',text,'revision',revision,'published_at',published_at) order by edition,book,chapter,verse),'[]'::jsonb)
+    from public.scripture_publications
+  )) from public.scripture_settings where id;
+$$;
+
+revoke all on function public.admin_scripture_overview(text), public.admin_scripture_chapter(text,integer,integer), public.save_scripture_chapter(text,integer,integer,jsonb), public.publish_scripture_chapter(text,integer,integer,jsonb), public.set_scripture_default(text,integer), public.admin_scripture_history(text,integer,integer,integer) from public, anon;
+grant execute on function public.admin_scripture_overview(text), public.admin_scripture_chapter(text,integer,integer), public.save_scripture_chapter(text,integer,integer,jsonb), public.publish_scripture_chapter(text,integer,integer,jsonb), public.set_scripture_default(text,integer), public.admin_scripture_history(text,integer,integer,integer) to authenticated;
+revoke all on function public.reader_scripture_snapshot() from public;
+grant execute on function public.reader_scripture_snapshot() to anon, authenticated;
+
+
+-- Source: 202610310001_allexi_genesis_1.sql
+-- User-supplied Allexi Genesis 1. Combined 4–5 and 11–12 are split at clause boundaries.
+-- Null actors identify this owner-applied content import, not a fictitious account.
+alter table public.scripture_drafts alter column updated_by drop not null;
+alter table public.scripture_history alter column actor_id drop not null;
+
+-- Only new rows are published: preserve all existing drafts and publications.
+with supplied(verse,text) as (values
+(1,'At the start, the lord created the heaven and the earth.'),
+(2,'that earth was shapeless and void ;and the spirit of the lord moved upon the darkness of the earth.'),
+(3,'and the lord said,let there be light: and light was.'),
+(4,'and the lord was pleased with the light, and divided the light from the dark.'),
+(5,'Then he let it shine for a while, and then it darkened again. He called the light day,” and the dark night. “  so then the first day was formed.'),
+(6,'and the lord said again,” vapors separate and form the sky up from the oceans below.'),
+(7,'that’s how the lord made the sky, by separating the vapors from the waters.'),
+(8,'the lord called the sky heaven, so then this happened on the second day.'),
+(9,'the lord said.  Let the waters beneath the sky be concentrated unto one,so the dry land emerge.”And it was so.'),
+(10,'father named the dry land earth; and the waters he then called”seas “.  And he was pleased.'),
+(11,'again father said. Earth burst forward with all sort of seed bearing plant,grass, and fruit trees with seeds,'),
+(12,'and the fruit tree bearing fruit after his kind, and so it was.'),
+(13,'this all happened on the third day.'),
+(14,'the lord said,light should be in the sky to brighten the earth so that the day and the night should get  their identity.'),
+(15,'that’s the start of seasons on earth and days and years. “ that was so.'),
+(16,'the lord made two huge lights, that’s the sun and the moon to shine,the biggest light the sun should rule over the day and the small one the moon should shine over the night; and he also made the stars.'),
+(17,'The lord put them in the sky to light the earth,'),
+(18,'so they could rule over the day and the night, to separate the light from the dark. Father was satisfied.'),
+(19,'this took place on the fourth day.'),
+(20,'father again said. Waters bring forth fish and other creatures that has life, and the skies should be filled with birds of all kinds.'),
+(21,'so the lord created sea creatures, and all sorts of fish and every kind of bird.  The Lord saw it to be good.'),
+(22,'and blessed them all.  Demanding that they be fruitful, and multiply,to fill the waters of the seas, and to the birds he said,”increase your numbers. And fill the earth.'),
+(23,'this was on the fifth day.'),
+(24,'the lord said, earth bring forth all kind of animals,cattle, and creeping thing, and wildlife of every kind. So it was.'),
+(25,'father made every sorts of wild animals in their kind,cattle and reptiles of their kind. And the Lord was pleased with the job.'),
+(26,'the Lord said,let us make man, and he should be like us and has our look. Let them be lord over all life on earth, birds in the skies and fish of the seas, the reptiles of the earth, and wildlife as well.'),
+(27,'so the lord created man like his maker.
+As God he make him God.
+Man and woman he made them.'),
+(28,'the lord blessed them, and said to them you are fruitful,multiply yourselves and fill the earth and subdue it. You are the Lord of the fish of the sea, the fowl of the air, the animals of the land and over every living thing.'),
+(29,'says the lord, I have given unto you the seed bearing plants upon the earth, all the fruit trees for your well being.'),
+(30,'all the grass and plants for the animals and birds for their food.'),
+(31,'the lord saw everything has made to be perfect in every angle. All ended on the sixth day.')
+), imported as (
+  insert into public.scripture_drafts(edition,book,chapter,verse,text,status,revision,updated_by)
+  select 'allexi',0,1,verse,text,'updated',1,null from supplied
+  on conflict(edition,book,chapter,verse) do nothing
+  returning *
+), published as (
+  insert into public.scripture_publications(edition,book,chapter,verse,text,revision)
+  select edition,book,chapter,verse,text,revision from imported
+  returning *
+), history as (
+  insert into public.scripture_history(edition,book,chapter,verse,action,after_text,status,revision,actor_id)
+  select edition,book,chapter,verse,'publish',text,'updated',revision,null from published
+  returning id
+)
+update public.scripture_settings
+set default_edition=case when revision=0 then 'allexi' else default_edition end,
+    revision=revision+1
+where id and exists(select 1 from history);
+
+
+-- Source: 202610310002_allexi_default.sql
+-- Switch existing installations to Allexi after the Genesis content import.
+-- Increment the snapshot revision so connected readers invalidate their caches.
+do $$
+begin
+  if not exists(select 1 from public.scripture_publications where edition='allexi') then
+    raise exception 'Apply the Allexi Genesis content migration before setting its default.';
+  end if;
+  with changed as (
+    update public.scripture_settings
+    set default_edition='allexi', revision=revision+1
+    where id and default_edition <> 'allexi'
+    returning revision
+  )
+  insert into public.scripture_history(edition,action,before_text,after_text,revision,actor_id)
+  select 'allexi','set_default','kjv','allexi',revision,null from changed;
+end;
+$$;
+
+
+-- Source: 202611130001_production_hardening.sql
+-- Preserve editorial work when its author deletes their account.
+alter table public.scripture_drafts drop constraint scripture_drafts_updated_by_fkey;
+alter table public.scripture_drafts add constraint scripture_drafts_updated_by_fkey
+  foreign key(updated_by) references auth.users(id) on delete set null;
+alter table public.scripture_history drop constraint scripture_history_actor_id_fkey;
+alter table public.scripture_history add constraint scripture_history_actor_id_fkey
+  foreign key(actor_id) references auth.users(id) on delete set null;
+
+-- Validate at the database boundary too: clients can call Supabase RPC directly.
+alter function public.sync_library(jsonb) set schema app_private;
+revoke all on function app_private.sync_library(jsonb) from public, anon, authenticated;
+create function public.sync_library(changes jsonb)
+returns jsonb language plpgsql security definer set search_path='' as $$
+declare item jsonb; total integer;
+begin
+  if auth.uid() is null or not exists(select 1 from auth.users where id=auth.uid()) then
+    raise exception 'Authentication required' using errcode='28000';
+  end if;
+  if jsonb_typeof(changes) is distinct from 'array' or jsonb_array_length(changes)>100 then
+    raise exception 'Expected at most 100 changes' using errcode='22023';
+  end if;
+  for item in select value from jsonb_array_elements(changes) loop
+    if jsonb_typeof(item) is distinct from 'object' then
+      raise exception 'Invalid change' using errcode='22023';
+    end if;
+    if (select count(*) from jsonb_object_keys(item)) <> 9
+      or not item ?& array['id','kind','book','chapter','verse','text','color','deleted','mutation_id'] then
+      raise exception 'Unexpected change fields' using errcode='22023';
+    end if;
+    if jsonb_typeof(item->'book') is distinct from 'number' or jsonb_typeof(item->'chapter') is distinct from 'number'
+      or jsonb_typeof(item->'verse') is distinct from 'number'
+      or (item->>'book') !~ '^[0-9]{1,2}$' or (item->>'chapter') !~ '^[0-9]{1,3}$' or (item->>'verse') !~ '^[0-9]{1,3}$'
+      or jsonb_typeof(item->'text') is distinct from 'string' or jsonb_typeof(item->'deleted') is distinct from 'boolean'
+      or jsonb_typeof(item->'id') is distinct from 'string' or jsonb_typeof(item->'kind') is distinct from 'string'
+      or jsonb_typeof(item->'mutation_id') is distinct from 'string'
+      or item->>'kind' not in ('bookmark','highlight','note','progress')
+      or length(item->>'text')>20000 or length(item->>'id')>100
+      or item->>'mutation_id' !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+      or (item->'color' <> 'null'::jsonb and (jsonb_typeof(item->'color') is distinct from 'string' or item->>'color' not in ('gold','sage','mint','rose','slate')))
+      or item->>'id' <> (case when item->>'kind'='progress' then 'progress'
+        else (item->>'book')||'.'||(item->>'chapter')||'.'||(item->>'verse')||'.'||(item->>'kind') end)
+    then raise exception 'Invalid change' using errcode='22023'; end if;
+    select verse_count into total from public.scripture_chapters where book=(item->>'book')::integer and chapter=(item->>'chapter')::integer;
+    if total is null or (item->>'verse')::integer not between 1 and total then
+      raise exception 'Unknown scripture verse' using errcode='22023';
+    end if;
+  end loop;
+  return app_private.sync_library(changes);
+end;
+$$;
+revoke all on function public.sync_library(jsonb) from public, anon;
+grant execute on function public.sync_library(jsonb) to authenticated;
+
+-- Versioned readiness probe is read-only and contains no private information.
+create function public.app_readiness() returns text language sql stable set search_path='' as $$
+  select '202611130001'::text;
+$$;
+revoke all on function public.app_readiness() from public;
+grant execute on function public.app_readiness() to anon, authenticated;
+
+-- Refresh the REST API's function cache after the transaction commits.
+notify pgrst, 'reload schema';
+commit;
+
+-- Expected: 202611130001, allexi, 31.
+select public.app_readiness() as schema_version,
+       public.reader_scripture_snapshot()->>'defaultEdition' as default_edition,
+       jsonb_array_length(public.reader_scripture_snapshot()->'verses') as published_verses;
+
+-- Create an administrator in Supabase Authentication > Users first.
+-- Then run the following separately, replacing the email with that administrator's:
+-- insert into app_private.content_admins(user_id)
+-- select id from auth.users where lower(email) = lower('YOUR_ADMIN_EMAIL')
+-- on conflict do nothing;
